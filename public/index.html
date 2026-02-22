@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>First-Cure | AI Skin Cancer Detection</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- TF.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+</head>
+<body>
+<header class="glass">
+  <div class="logo">
+    <img src="assets/logo.png" alt="logo">
+    <span>First-Cure</span>
+  </div>
+  <nav class="nav-sections">
+    <a href="index.html" class="nav-item">Home</a>
+    <a href="about.html" class="nav-item">About</a>
+    <a href="contact.html" class="nav-item">Contact</a>
+    <a href="history.html" class="nav-item">Patient History</a>
+  </nav>
+</header>
+
+<section class="hero">
+  <h1>Early Detection Saves Lives</h1>
+  <p>AI-powered skin cancer screening</p>
+</section>
+
+<section class="card upload-card glow">
+  <div style="display:flex;align-items:center;gap:15px;margin-bottom:15px">
+    <label for="imageUpload" class="custom-file-upload">
+      Choose Images
+    </label>
+    <p id="fileCount" style="margin:0;color:#666;font-size:14px">No files selected</p>
+  </div>
+  <input type="file" id="imageUpload" accept="image/*" multiple onchange="previewImages()" style="display:none">
+  <button onclick="analyzeAllImages()">Analyze All</button>
+</section>
+
+<section id="resultsContainer"></section>
+
+<div id="saveAllContainer" style="display:none;text-align:center;margin:20px auto;max-width:420px">
+  <button onclick="saveAllResults()" id="saveAllBtn" style="width:100%;padding:12px;background:#0b7285;color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:15px">Save All Results</button>
+</div>
+
+<section class="map-section">
+  <h2>Find Nearby Dermatologists</h2>
+  <div id="map"></div>
+</section>
+
+<footer>
+  ⚠️ Educational use only. Consult a dermatologist.
+</footer>
+
+<script src="js/script.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+let map = null;
+
+function initMap() {
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        
+        map = L.map('map').setView([lat, lng], 13);
+        
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap'
+        }).addTo(map);
+        
+        L.marker([lat, lng]).addTo(map)
+          .bindPopup('Your Location').openPopup();
+        
+        // Sample dermatologist locations
+        const dermatologists = [
+          { lat: lat + 0.01, lng: lng + 0.01, name: 'Skin Care Clinic', address: '123 Medical Ave' },
+          { lat: lat - 0.015, lng: lng + 0.02, name: 'Dermatology Center', address: '456 Health St' },
+          { lat: lat + 0.02, lng: lng - 0.01, name: 'Advanced Skin Institute', address: '789 Care Blvd' }
+        ];
+        
+        dermatologists.forEach(doc => {
+          L.marker([doc.lat, doc.lng], {
+            icon: L.icon({
+              iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+              iconSize: [25, 41],
+              iconAnchor: [12, 41]
+            })
+          }).addTo(map)
+            .bindPopup(`<b>${doc.name}</b><br>${doc.address}`);
+        });
+      },
+      () => {
+        map = L.map('map').setView([40.7128, -74.0060], 12);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap'
+        }).addTo(map);
+      }
+    );
+  }
+}
+</script>
+
+<!-- ============================================================
+     AI MODEL INTEGRATION
+     Requires: tfjs_model/model.json + shard .bin files
+     placed in the same folder as this index.html
+     ============================================================ -->
+<script>
+const CLASSES = [
+  { key: 'akiec', label: 'Actinic Keratosis',    risk: 'malignant' },
+  { key: 'bcc',   label: 'Basal Cell Carcinoma',  risk: 'malignant' },
+  { key: 'bkl',   label: 'Benign Keratosis',      risk: 'benign'    },
+  { key: 'df',    label: 'Dermatofibroma',         risk: 'benign'    },
+  { key: 'mel',   label: 'Melanoma',               risk: 'malignant' },
+  { key: 'nv',    label: 'Melanocytic Nevi',       risk: 'benign'    },
+  { key: 'vasc',  label: 'Vascular Lesion',        risk: 'benign'    },
+];
+
+const MODEL_PATH = './model/model.json';
+
+let model = null;
+let uploadedImages = [];
+
+window.addEventListener('DOMContentLoaded', async () => {
+  try {
+    model = await tf.loadGraphModel(MODEL_PATH);
+  } catch (err) {
+    alert('⚠ Model failed to load: ' + err.message);
+  }
+  loadHistory();
+});
+
+function previewImages() {
+  const files = document.getElementById('imageUpload').files;
+  uploadedImages = Array.from(files);
+  document.getElementById('resultsContainer').innerHTML = '';
+  
+  const fileCount = document.getElementById('fileCount');
+  fileCount.textContent = files.length > 0 ? `${files.length} file(s) selected` : 'No files selected';
+  
+  uploadedImages.forEach((file, idx) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const card = document.createElement('div');
+      card.className = 'card report-card';
+      card.id = `result-${idx}`;
+      card.innerHTML = `
+        <div class="scan-box">
+          <img src="${e.target.result}" style="width:100%;border-radius:12px;display:block">
+          <div class="scanner" id="scanner-${idx}" style="display:none"></div>
+        </div>
+        <h3>Scan ${idx + 1}</h3>
+        <p id="status-${idx}">Ready to scan</p>
+        <div class="progress"><div id="progress-${idx}" style="width:0;height:100%;background:linear-gradient(to right,#0b7285,#20c997);transition:1s"></div></div>
+        <p id="recommendation-${idx}"></p>
+        <div id="detailed-${idx}"></div>
+        <div style="margin-top:15px;padding-top:15px;border-top:1px solid #ddd">
+          <input type="text" id="name-${idx}" placeholder="Patient Name" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;margin-bottom:8px">
+          <textarea id="notes-${idx}" placeholder="Notes" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;resize:vertical;min-height:50px;margin-bottom:8px"></textarea>
+          <button onclick="saveIndividualResult(${idx})" id="save-${idx}" style="width:100%;padding:10px;background:#0b7285;color:#fff;border:none;border-radius:8px;cursor:pointer;display:none">Save Result</button>
+        </div>
+      `;
+      document.getElementById('resultsContainer').appendChild(card);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function analyzeAllImages() {
+  if (!model) {
+    alert('⚠ Model not loaded yet.');
+    return;
+  }
+  if (uploadedImages.length === 0) {
+    alert('⚠ Please upload images first.');
+    return;
+  }
+
+  const promises = uploadedImages.map((file, idx) => analyzeImage(idx));
+  await Promise.all(promises);
+  
+  document.querySelector('.map-section').style.display = 'block';
+  if (!window.mapInitialized) {
+    setTimeout(() => initMap(), 100);
+    window.mapInitialized = true;
+  }
+}
+
+async function analyzeImage(idx) {
+  const scanner = document.getElementById(`scanner-${idx}`);
+  const status = document.getElementById(`status-${idx}`);
+  const progress = document.getElementById(`progress-${idx}`);
+  const recommendation = document.getElementById(`recommendation-${idx}`);
+  const detailed = document.getElementById(`detailed-${idx}`);
+  const card = document.getElementById(`result-${idx}`);
+  
+  scanner.style.display = 'block';
+  status.textContent = 'Analyzing…';
+  
+  try {
+    const imgEl = document.querySelector(`#result-${idx} img`);
+    
+    const tensor = tf.tidy(() => {
+      return tf.browser.fromPixels(imgEl)
+        .resizeBilinear([224, 224])
+        .toFloat()
+        .expandDims(0);
+    });
+
+    const predTensor = model.predict(tensor);
+    const preds = await predTensor.data();
+    tensor.dispose();
+    predTensor.dispose();
+
+    const sorted = CLASSES
+      .map((c, i) => ({ ...c, prob: preds[i] ?? 0 }))
+      .sort((a, b) => b.prob - a.prob);
+
+    const top = sorted[0];
+    const conf = top.prob;
+    const uncertain = conf < 0.0;
+
+    scanner.style.display = 'none';
+    progress.style.width = (conf * 100).toFixed(1) + '%';
+
+    if (uncertain) {
+      status.textContent = `Uncertain — ${(conf * 100).toFixed(1)}%`;
+      status.style.color = '#f59f00';
+      card.style.borderLeft = '5px solid #f59f00';
+    } else if (top.risk === 'malignant') {
+      status.textContent = `⚠ CANCEROUS — ${top.label} (${(conf * 100).toFixed(1)}%)`;
+      status.style.color = '#c92a2a';
+      card.style.borderLeft = '5px solid #c92a2a';
+    } else {
+      status.textContent = `✓ NON-CANCEROUS — ${top.label} (${(conf * 100).toFixed(1)}%)`;
+      status.style.color = '#2b8a3e';
+      card.style.borderLeft = '5px solid #2b8a3e';
+    }
+
+    recommendation.textContent = uncertain
+      ? 'Result is inconclusive. Please consult a dermatologist.'
+      : top.risk === 'malignant'
+        ? 'This result may indicate a cancerous lesion. Please seek medical advice promptly.'
+        : 'This result appears non-cancerous, but always confirm with a professional.';
+
+    detailed.innerHTML = '<h4 style="margin-top:15px;font-size:13px">Confidence Breakdown:</h4>' +
+      sorted.map(c => `
+        <div style="margin:6px 0">
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px">
+            <span>${c.label}</span>
+            <span>${(c.prob * 100).toFixed(1)}%</span>
+          </div>
+          <div style="height:6px;background:#ddd;border-radius:3px;overflow:hidden">
+            <div style="height:100%;width:${(c.prob * 100).toFixed(1)}%;background:${c.risk === 'malignant' ? '#c92a2a' : '#2b8a3e'};transition:0.5s"></div>
+          </div>
+        </div>
+      `).join('');
+
+    card.dataset.result = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      diagnosis: top.label,
+      confidence: conf,
+      risk: top.risk,
+      breakdown: sorted.map(c => ({ label: c.label, prob: c.prob })),
+      image: imgEl.src
+    });
+    
+    document.getElementById(`save-${idx}`).style.display = 'block';
+    document.getElementById('saveAllContainer').style.display = 'block';
+  } catch (err) {
+    scanner.style.display = 'none';
+    status.textContent = 'Error: ' + err.message;
+  }
+}
+
+function saveIndividualResult(idx) {
+  const card = document.getElementById(`result-${idx}`);
+  const result = JSON.parse(card.dataset.result);
+  
+  result.patientName = document.getElementById(`name-${idx}`).value || 'Anonymous';
+  result.notes = document.getElementById(`notes-${idx}`).value || '';
+  
+  const history = JSON.parse(localStorage.getItem('patientHistory') || '[]');
+  history.unshift(result);
+  localStorage.setItem('patientHistory', JSON.stringify(history));
+  
+  const btn = document.getElementById(`save-${idx}`);
+  btn.textContent = '✓ Saved';
+  btn.style.background = '#2b8a3e';
+  setTimeout(() => {
+    btn.textContent = 'Save Result';
+    btn.style.background = '#0b7285';
+  }, 2000);
+  
+  document.getElementById(`name-${idx}`).value = '';
+  document.getElementById(`notes-${idx}`).value = '';
+  loadHistory();
+}
+
+function saveAllResults() {
+  const history = JSON.parse(localStorage.getItem('patientHistory') || '[]');
+  let savedCount = 0;
+  
+  uploadedImages.forEach((file, idx) => {
+    const card = document.getElementById(`result-${idx}`);
+    if (card && card.dataset.result) {
+      const result = JSON.parse(card.dataset.result);
+      result.patientName = document.getElementById(`name-${idx}`).value || 'Anonymous';
+      result.notes = document.getElementById(`notes-${idx}`).value || '';
+      history.unshift(result);
+      document.getElementById(`name-${idx}`).value = '';
+      document.getElementById(`notes-${idx}`).value = '';
+      savedCount++;
+    }
+  });
+  
+  localStorage.setItem('patientHistory', JSON.stringify(history));
+  
+  const btn = document.getElementById('saveAllBtn');
+  btn.textContent = `✓ Saved ${savedCount} Result(s)`;
+  btn.style.background = '#2b8a3e';
+  setTimeout(() => {
+    btn.textContent = 'Save All Results';
+    btn.style.background = '#0b7285';
+  }, 2000);
+  
+  loadHistory();
+}
+
+function loadHistory() {
+  const history = JSON.parse(localStorage.getItem('patientHistory') || '[]');
+  const historyList = document.getElementById('historyList');
+  
+  if (history.length === 0) {
+    historyList.innerHTML = '<p style="color:#888;text-align:center">No saved results yet</p>';
+    return;
+  }
+  
+  historyList.innerHTML = history.map((record, idx) => `
+    <div style="border:1px solid #ddd;padding:15px;margin:10px 0;border-radius:10px;border-left:4px solid ${record.risk === 'malignant' ? '#c92a2a' : '#2b8a3e'}">
+      <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+        <strong>${record.patientName}</strong>
+        <span style="font-size:12px;color:#666">${new Date(record.timestamp).toLocaleString()}</span>
+      </div>
+      <p style="margin:5px 0"><strong>Diagnosis:</strong> ${record.diagnosis} (${(record.confidence * 100).toFixed(1)}%)</p>
+      ${record.notes ? `<p style="margin:5px 0;font-size:13px;color:#555"><strong>Notes:</strong> ${record.notes}</p>` : ''}
+      <button onclick="deleteRecord(${idx})" style="padding:5px 15px;font-size:12px;background:#c92a2a;margin-top:8px">Delete</button>
+    </div>
+  `).join('');
+}
+
+function deleteRecord(idx) {
+  const history = JSON.parse(localStorage.getItem('patientHistory') || '[]');
+  history.splice(idx, 1);
+  localStorage.setItem('patientHistory', JSON.stringify(history));
+  loadHistory();
+}
+</script>
+
+</body>
+</html>
